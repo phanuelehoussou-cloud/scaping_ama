@@ -3,7 +3,7 @@ import subprocess
 import sys
 import webbrowser
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -17,7 +17,7 @@ from rich.progress import (
 )
 from rich.prompt import IntPrompt, Prompt
 
-from controllers.categories import ALL_CATEGORIES_KEY, CATEGORIES, Categorie
+from controllers.categories import CATEGORIES, Categorie
 from controllers.scraper_controller import ScraperController
 from models.repository import ProduitRepository
 
@@ -26,21 +26,34 @@ BASE_DIR = Path(__file__).resolve().parent
 console = Console()
 
 
+def ask_menu_number(prompt: str, minimum: int, maximum: int, default: Optional[int] = None) -> int:
+    """Demande un entier dans une plage et recommence tant que la saisie est invalide."""
+    while True:
+        value = IntPrompt.ask(prompt, default=default, show_default=default is not None)
+        if minimum <= value <= maximum:
+            return value
+        console.print(f"[yellow]Choisis un nombre entre {minimum} et {maximum}.[/yellow]")
+
+
+def ask_positive_number(prompt: str, default: int = 10) -> int:
+    """Demande un nombre strictement positif."""
+    while True:
+        value = IntPrompt.ask(prompt, default=default, show_default=True)
+        if value > 0:
+            return value
+        console.print("[yellow]Le nombre doit être supérieur à zéro.[/yellow]")
+
+
 def choose_categories() -> List[Categorie]:
     console.print("\n[bold cyan]Catégories disponibles[/bold cyan]")
     console.print("[bold]0[/bold]. Toutes les catégories")
     for category in CATEGORIES:
         console.print(f"[bold]{category.cle}[/bold]. {category.nom}")
 
-    choice = Prompt.ask("\nChoisis une catégorie", default="0").strip().lower()
-    if choice in {"0", ALL_CATEGORIES_KEY, "toutes", "all"}:
+    choice = ask_menu_number("Choisis une catégorie", 0, len(CATEGORIES), default=0)
+    if choice == 0:
         return CATEGORIES
-
-    selected = next((category for category in CATEGORIES if category.cle == choice), None)
-    if selected:
-        return [selected]
-    console.print("[yellow]Choix invalide : toutes les catégories seront utilisées.[/yellow]")
-    return CATEGORIES
+    return [CATEGORIES[choice - 1]]
 
 
 def ask_limit(categories: List[Categorie]) -> int:
@@ -49,19 +62,21 @@ def ask_limit(categories: List[Categorie]) -> int:
         if len(categories) > 1
         else f"Produits à scraper dans {categories[0].nom}"
     )
-    return IntPrompt.ask(label, default=10, show_default=True)
+    return ask_positive_number(label)
 
 
 def save_results(repository: ProduitRepository) -> bool:
-    choice = Prompt.ask(
-        "\nFormat de sauvegarde",
-        choices=["csv", "json", "both", "aucun"],
-        default="both",
-    )
+    console.print("\n[bold cyan]Format de sauvegarde[/bold cyan]")
+    console.print("[bold]1[/bold]. CSV uniquement")
+    console.print("[bold]2[/bold]. JSON uniquement")
+    console.print("[bold]3[/bold]. CSV et JSON")
+    console.print("[bold]4[/bold]. Ne pas sauvegarder")
+    choice = ask_menu_number("Choisis une option", 1, 4, default=3)
+
     saved = []
-    if choice in {"json", "both"}:
+    if choice in {2, 3}:
         saved.append(repository.save_json())
-    if choice in {"csv", "both"}:
+    if choice in {1, 3}:
         saved.append(repository.save_csv())
     if saved:
         console.print("\n[bold green]Exports terminés[/bold green]")
@@ -69,17 +84,27 @@ def save_results(repository: ProduitRepository) -> bool:
             console.print(f"  • {path}")
     else:
         console.print("[yellow]Aucun fichier sauvegardé.[/yellow]")
-    return choice in {"json", "both"}
+    return choice in {2, 3}
 
 
-def offer_web_viewer() -> None:
-    choice = Prompt.ask(
-        "\nOuvrir la galerie web des produits scrapés ?",
-        choices=["o", "n"],
-        default="o",
-    )
-    if choice != "o":
-        return
+def offer_web_viewer(
+    existing_process: Optional[subprocess.Popen] = None,
+    json_available: bool = True,
+):
+    console.print("\n[bold cyan]Galerie web[/bold cyan]")
+    console.print("[bold]1[/bold]. Ouvrir la galerie")
+    console.print("[bold]2[/bold]. Ne pas ouvrir")
+    choice = ask_menu_number("Choisis une option", 1, 2, default=1)
+    if choice != 1:
+        return existing_process
+    if not json_available:
+        console.print("[yellow]La galerie nécessite une sauvegarde JSON.[/yellow]")
+        return existing_process
+
+    if existing_process and existing_process.poll() is None:
+        console.print("[green]Galerie déjà ouverte sur http://127.0.0.1:5000[/green]")
+        webbrowser.open("http://127.0.0.1:5000")
+        return existing_process
 
     process = subprocess.Popen(
         [sys.executable, str(BASE_DIR / "web.py")],
@@ -90,14 +115,10 @@ def offer_web_viewer() -> None:
         f"[green]Galerie disponible sur http://127.0.0.1:5000[/green] (PID {process.pid})"
     )
     webbrowser.open("http://127.0.0.1:5000")
+    return process
 
 
-def main() -> None:
-    console.print(Panel.fit(
-        "[bold white]Amazon Scraper Pro[/bold white]\n"
-        "Scraping multi-catégories avec exports et galerie web",
-        border_style="cyan",
-    ))
+def run_scraping_session(web_process=None):
     categories = choose_categories()
     limit = ask_limit(categories)
     total = len(categories) * limit
@@ -130,16 +151,11 @@ def main() -> None:
                     progress.console.print(
                         f"[yellow]Catégorie {category.nom} ignorée : {exc}[/yellow]"
                     )
-
-                # Le quota de la catégorie est clôturé même si Amazon renvoie
-                # moins de produits ou si la catégorie rencontre une erreur.
                 progress.advance(task, max(0, limit - len(products)))
-
-            # Le bilan n'est affiché qu'après une barre effectivement à 100 %.
             progress.update(task, completed=total, description="Scraping terminé")
     except Exception as exc:
         console.print(f"[bold red]Impossible de démarrer le scraper : {exc}[/bold red]")
-        return
+        return web_process
     finally:
         if controller:
             controller.close()
@@ -147,13 +163,29 @@ def main() -> None:
     console.print(f"\n[bold green]{repository.count()} produit(s) récupéré(s).[/bold green]")
     if repository.count() == 0:
         console.print("[yellow]Aucun produit trouvé. Vérifie le réseau ou un éventuel CAPTCHA Amazon.[/yellow]")
-        return
+        return web_process
 
-    json_saved = save_results(repository)
-    if json_saved:
-        offer_web_viewer()
-    else:
-        console.print("[dim]La galerie web nécessite l'export JSON.[/dim]")
+    json_available = save_results(repository)
+    return offer_web_viewer(web_process, json_available)
+
+
+def main() -> None:
+    console.print(Panel.fit(
+        "[bold white]Amazon Scraper Pro[/bold white]\n"
+        "Scraping multi-catégories avec exports et galerie web",
+        border_style="cyan",
+    ))
+    web_process = None
+    while True:
+        web_process = run_scraping_session(web_process)
+        console.print("\n[bold cyan]Action suivante[/bold cyan]")
+        console.print("[bold]1[/bold]. Continuer le scraping")
+        console.print("[bold]2[/bold]. Sortir du programme")
+        choice = ask_menu_number("Choisis une option", 1, 2, default=2)
+        if choice == 2:
+            console.print("[bold cyan]Programme terminé. À bientôt.[/bold cyan]")
+            break
+        console.print("\n[bold cyan]Nouvelle session de scraping[/bold cyan]")
 
 
 if __name__ == "__main__":

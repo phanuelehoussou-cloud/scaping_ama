@@ -57,6 +57,10 @@ $env:SCRAPER_HEADLESS = "1"  # 0 pour afficher Chrome
 $env:FLASK_DEBUG = "0"       # 1 uniquement en développement
 ```
 
+## Sessions multiples
+
+Après chaque scraping, le programme demande si l'utilisateur veut `continuer` ou `sortir`. Le choix `continuer` réaffiche le menu des catégories pour démarrer une nouvelle session. Le serveur web déjà ouvert est réutilisé au lieu d'être lancé une seconde fois.
+
 ## Notes importantes
 
 Amazon peut afficher un CAPTCHA, modifier ses sélecteurs HTML ou limiter les requêtes automatisées. Le scraper traite alors la catégorie concernée et continue avec les suivantes. Utilisez ce projet dans le respect des conditions d'utilisation et de la réglementation applicables.
