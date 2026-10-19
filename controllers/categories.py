@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import List
 
 
+AMAZON_BASE_URL = "https://www.amazon.fr/"
+
+
 @dataclass(frozen=True)
 class Categorie:
     cle: str
@@ -10,7 +13,7 @@ class Categorie:
 
     @property
     def url(self) -> str:
-        return f"https://www.amazon.fr/gp/bestsellers/{self.slug}"
+        return f"{AMAZON_BASE_URL}gp/bestsellers/{self.slug}"
 
 
 CATEGORIES: List[Categorie] = [

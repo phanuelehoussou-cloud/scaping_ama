@@ -1,6 +1,6 @@
 # Amazon Scraper Pro
 
-Application Python de scraping Amazon par catégories, avec progression dans le terminal, exports CSV/JSON et galerie web.
+Application Python de scraping Amazon par catégories, basée sur `https://www.amazon.fr/`, avec progression dans le terminal, exports CSV/JSON et galerie web.
 
 ## Fonctionnalités
 
@@ -11,6 +11,7 @@ Application Python de scraping Amazon par catégories, avec progression dans le 
 - export CSV, JSON, ou les deux ;
 - galerie Flask responsive avec filtres par catégorie ;
 - réutilisation du même navigateur Selenium pour toutes les catégories.
+- sélecteurs CSS orientés classes Amazon (`a-cardui`, `a-carousel-card`, `s-result-item`, etc.).
 
 ## Installation
 

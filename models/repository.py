@@ -28,7 +28,7 @@ class ProduitRepository:
         return list(self._items)
 
     def get_all(self) -> List[Produit]:
-        return self.all()
+        return list(self._items)
 
     def count(self) -> int:
         return len(self._items)

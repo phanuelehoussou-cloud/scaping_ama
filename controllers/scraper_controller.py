@@ -10,7 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
-from controllers.categories import Categorie
+from controllers.categories import AMAZON_BASE_URL, Categorie
 from models.item import Produit
 
 
@@ -20,10 +20,12 @@ ProgressCallback = Callable[[Produit], None]
 class ScraperController:
     """Scraper Amazon résilient pour une ou plusieurs catégories."""
 
-    CARD_SELECTOR = "#gridItemRoot, .a-carousel-card, .zg-grid-general-faceout"
+    # Sélecteurs basés sur les classes visibles dans le DOM Amazon.
+    CARD_SELECTOR = ".a-cardui, .a-carousel-card, .zg-grid-general-faceout, .s-result-item"
 
     def __init__(self, headless: bool = True, wait_seconds: int = 12):
         self.wait_seconds = wait_seconds
+        self.base_url = AMAZON_BASE_URL
         self.driver = self._init_driver(headless)
 
     def _init_driver(self, headless: bool):
@@ -96,15 +98,14 @@ class ScraperController:
 
     def _parse_card(self, card, category: Categorie) -> Optional[Produit]:
         title = self._find_first(card, [
-            "div.p13n-sc-truncate-desktop-type2",
-            "div.p13n-sc-truncate",
-            "span.a-size-medium",
-            "a[title]",
+            ".p13n-sc-truncate-desktop-type2",
+            ".p13n-sc-truncate",
+            ".a-size-medium",
+            ".a-size-base-plus",
         ])
         link = self._find_first(card, [
-            "a.a-link-normal.aok-block",
-            "a[href*='/dp/']",
-            "a[href*='/gp/product/']",
+            ".a-link-normal.aok-block",
+            ".a-link-normal",
         ])
         if title is None or link is None:
             return None
@@ -115,10 +116,11 @@ class ScraperController:
             return None
 
         price = self._find_first(card, [
-            "span.p13n-sc-price",
-            "span.a-price .a-offscreen",
+            ".p13n-sc-price",
+            ".a-price .a-offscreen",
+            ".a-price-whole",
         ])
-        rating = self._find_first(card, ["span.a-icon-alt", "i.a-icon-star"])
+        rating = self._find_first(card, [".a-icon-alt", ".a-icon-star"])
         rating_text = ""
         if rating:
             rating_text = (
@@ -148,6 +150,9 @@ class ScraperController:
         on_product: Optional[ProgressCallback] = None,
     ) -> List[Produit]:
         """Scrape au maximum `limit` produits d'une catégorie."""
+        # On part toujours du domaine demandé, puis on ouvre la page de
+        # classement de la catégorie construite depuis cette URL racine.
+        self.driver.get(self.base_url)
         self.driver.get(category.url)
         time.sleep(1.5)
         products: List[Produit] = []
