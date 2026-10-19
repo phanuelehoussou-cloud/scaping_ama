@@ -81,9 +81,8 @@ def offer_web_viewer() -> None:
     if choice != "o":
         return
 
-    python_executable = sys.executable
     process = subprocess.Popen(
-        [python_executable, str(BASE_DIR / "web.py")],
+        [sys.executable, str(BASE_DIR / "web.py")],
         cwd=BASE_DIR,
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
@@ -95,7 +94,7 @@ def offer_web_viewer() -> None:
 
 def main() -> None:
     console.print(Panel.fit(
-        "[bold white]Amazon Scraper by PH-KING[/bold white]\n"
+        "[bold white]Amazon Scraper Pro[/bold white]\n"
         "Scraping multi-catégories avec exports et galerie web",
         border_style="cyan",
     ))
@@ -103,7 +102,6 @@ def main() -> None:
     limit = ask_limit(categories)
     total = len(categories) * limit
     headless = os.getenv("SCRAPER_HEADLESS", "1") != "0"
-
     repository = ProduitRepository(output_dir=str(BASE_DIR / "output"))
     controller = None
     progress = Progress(
@@ -128,10 +126,17 @@ def main() -> None:
                     products = controller.scrape_category(category, limit, on_product)
                     repository.add_many(products)
                 except Exception as exc:
+                    products = []
                     progress.console.print(
                         f"[yellow]Catégorie {category.nom} ignorée : {exc}[/yellow]"
                     )
-            progress.update(task, description="Scraping terminé")
+
+                # Le quota de la catégorie est clôturé même si Amazon renvoie
+                # moins de produits ou si la catégorie rencontre une erreur.
+                progress.advance(task, max(0, limit - len(products)))
+
+            # Le bilan n'est affiché qu'après une barre effectivement à 100 %.
+            progress.update(task, completed=total, description="Scraping terminé")
     except Exception as exc:
         console.print(f"[bold red]Impossible de démarrer le scraper : {exc}[/bold red]")
         return
@@ -143,6 +148,7 @@ def main() -> None:
     if repository.count() == 0:
         console.print("[yellow]Aucun produit trouvé. Vérifie le réseau ou un éventuel CAPTCHA Amazon.[/yellow]")
         return
+
     json_saved = save_results(repository)
     if json_saved:
         offer_web_viewer()
