@@ -1,4 +1,5 @@
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+
 
 @dataclass
 class Produit:
@@ -8,6 +9,7 @@ class Produit:
     disponibilite: bool
     url: str
     image: str = ""
+    categorie: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
