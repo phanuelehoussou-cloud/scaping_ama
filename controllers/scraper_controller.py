@@ -1,13 +1,14 @@
-import time
 import re
+import time
+
 from selenium import webdriver
-from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
 from models.item import Produit
 from models.repository import ProduitRepository
@@ -15,14 +16,7 @@ from views.console_view import ConsoleView
 
 
 class ScraperController:
-    """
-    Orchestre le scraping d'une page de résultats de recherche Amazon.
-
-    ATTENTION : Amazon change fréquemment sa structure HTML et bloque
-    activement les bots (CAPTCHA, blocage IP). Les sélecteurs CSS ci-dessous
-    sont un point de départ : ouvre la page dans ton navigateur, clic droit
-    -> Inspecter sur un produit, et ajuste les sélecteurs si besoin.
-    """
+    """Scrape les produits visibles sur une page Amazon."""
 
     def __init__(self, base_url: str, headless: bool = True):
         self.base_url = base_url
@@ -50,127 +44,116 @@ class ScraperController:
         )
 
     def _parse_price(self, text: str) -> float:
-        """Transforme '19,99€' ou '$19.99' en 19.99 (float)."""
+        """Convertit les formats 19,99 €, 1.234,56 € et $19.99."""
         cleaned = re.sub(r"[^\d,.]", "", text)
-        cleaned = cleaned.replace(",", ".")
+        if not cleaned:
+            return 0.0
+        last_comma = cleaned.rfind(",")
+        last_dot = cleaned.rfind(".")
+        decimal_separator = "," if last_comma > last_dot else "."
+        if last_comma >= 0 and last_dot >= 0:
+            thousands_separator = "." if decimal_separator == "," else ","
+            cleaned = cleaned.replace(thousands_separator, "")
+        cleaned = cleaned.replace(decimal_separator, ".")
         try:
             return float(cleaned)
         except ValueError:
             return 0.0
 
     def _parse_rating(self, text: str) -> float:
-        """Transforme '4,5 sur 5 étoiles' en 4.5 (float)."""
+        class_match = re.search(r"a-star-(\d)-(\d)", text)
+        if class_match:
+            return float(f"{class_match.group(1)}.{class_match.group(2)}")
         match = re.search(r"(\d[.,]?\d?)", text)
-        if match:
-            return float(match.group(1).replace(",", "."))
-        return 0.0
-    
+        return float(match.group(1).replace(",", ".")) if match else 0.0
+
     def _get_image(self, card) -> str:
-        """Récupère l'URL de l'image d'une carte (gère le lazy-loading d'Amazon)."""
-        # Amazon charge les images au scroll : on amène la carte à l'écran
         self.driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", card
         )
-        time.sleep(0.3)
+        time.sleep(0.2)
         try:
-            img = card.find_element(By.CSS_SELECTOR, "img")
+            image = card.find_element(By.CSS_SELECTOR, "img")
         except NoSuchElementException:
             return ""
-        src = img.get_attribute("src") or ""
-        # Si c'est encore un placeholder (data:image...), on tente les autres attributs
-        if not src.startswith("http"):
-            src = img.get_attribute("data-src") or ""
-        return src
+        for attribute in ("src", "data-src", "data-old-hires"):
+            value = image.get_attribute(attribute) or ""
+            if value.startswith("http"):
+                return value
+        return ""
 
-    def _scrape_page(self):
-        """
-        Sélecteurs validés le 24/09/2026 sur la page Bestsellers Amazon.fr
-        via l'inspecteur du navigateur (structure .a-carousel-card).
-        """
-        CARD_SELECTOR = ".a-carousel-card"
-        cards = self._wait_for(By.CSS_SELECTOR, CARD_SELECTOR)
-        items = []
-        for card in cards:
-            # Certaines cartes du carousel sont des publicités de marque
-            # ("Brand Story"), pas des produits : on les ignore.
-            card_class = card.get_attribute("class") or ""
-            if "brand-story" in card_class:
-                continue
+    def _find_first(self, card, selectors):
+        for selector in selectors:
             try:
-                # Titre : dans l'attribut "title" du div dédié (cartes normales),
-                # ou dans l'attribut "title" d'un lien (cartes sponsorisées)
-                try:
-                    nom = card.find_element(
-                        By.CSS_SELECTOR, "div.p13n-sc-truncate-desktop-type2"
-                    ).get_attribute("title")
-                except NoSuchElementException:
-                    try:
-                        nom = card.find_element(By.CSS_SELECTOR, "a[title]").get_attribute("title")
-                    except NoSuchElementException:
-                        nom = ""
-
-                # Lien : href relatif -> on complète avec le domaine
-                try:
-                    href = card.find_element(
-                        By.CSS_SELECTOR, "a.a-link-normal.aok-block"
-                    ).get_attribute("href")
-                    url = href  # Selenium retourne déjà l'URL absolue résolue par le navigateur
-                except NoSuchElementException:
-                    url = ""
-
-                # Prix : structure "normale" d'abord, structure sponsorisée en secours
-                try:
-                    prix_text = card.find_element(By.CSS_SELECTOR, "span.p13n-sc-price").text
-                    prix = self._parse_price(prix_text)
-                except NoSuchElementException:
-                    try:
-                        prix_text = card.find_element(By.CSS_SELECTOR, "span.a-price .a-offscreen").text
-                        prix = self._parse_price(prix_text)
-                    except NoSuchElementException:
-                        prix = 0.0
-
-                # Note : texte explicite d'abord, sinon on lit la classe CSS
-                # de l'étoile (ex. "a-star-4-5" -> 4.5) sur les cartes sponsorisées
-                try:
-                    note_text = card.find_element(By.CSS_SELECTOR, "span.a-icon-alt").get_attribute("innerText")
-                    note = self._parse_rating(note_text)
-                except NoSuchElementException:
-                    try:
-                        classes = card.find_element(By.CSS_SELECTOR, "i.a-icon-star").get_attribute("class")
-                        # ex. "a-icon a-icon-star a-star-4-5" -> on extrait "4-5" -> 4.5
-                        match = re.search(r"a-star-(\d)-(\d)", classes)
-                        note = float(f"{match.group(1)}.{match.group(2)}") if match else 0.0
-                    except NoSuchElementException:
-                        note = 0.0
-
-                disponibilite = True  # les produits bestsellers sont presque toujours en stock
-
-                if nom and url:
-                    items.append(Produit(nom=nom.strip(), prix=prix, note=note,
-                                            disponibilite=disponibilite, url=url))
+                return card.find_element(By.CSS_SELECTOR, selector)
             except NoSuchElementException:
                 continue
+        return None
+
+    def _scrape_page(self):
+        cards = self._wait_for(By.CSS_SELECTOR, ".a-carousel-card")
+        items = []
+        for card in cards:
+            if "brand-story" in (card.get_attribute("class") or ""):
+                continue
+            title_element = self._find_first(card, [
+                "div.p13n-sc-truncate-desktop-type2",
+                "a[title]",
+            ])
+            link_element = self._find_first(card, [
+                "a.a-link-normal.aok-block",
+                "a[href*='/dp/']",
+            ])
+            if title_element is None or link_element is None:
+                continue
+            nom = (title_element.get_attribute("title") or title_element.text or "").strip()
+            url = link_element.get_attribute("href") or ""
+
+            price_element = self._find_first(card, [
+                "span.p13n-sc-price",
+                "span.a-price .a-offscreen",
+            ])
+            prix = self._parse_price(price_element.text) if price_element else 0.0
+
+            rating_element = self._find_first(card, ["span.a-icon-alt", "i.a-icon-star"])
+            note = 0.0
+            if rating_element:
+                rating_text = rating_element.get_attribute("innerText") or rating_element.get_attribute("class") or rating_element.text
+                note = self._parse_rating(rating_text)
+
+            card_text = (card.text or "").lower()
+            disponibilite = not any(
+                marker in card_text
+                for marker in ("indisponible", "rupture de stock", "épuisé")
+            )
+            if nom and url:
+                items.append(Produit(
+                    nom=nom,
+                    prix=prix,
+                    note=note,
+                    disponibilite=disponibilite,
+                    url=url,
+                    image=self._get_image(card),
+                ))
         return items
 
     def run(self):
         self.view.show_start(self.base_url)
         try:
             self.driver.get(self.base_url)
-            time.sleep(2)  # laisser la page se stabiliser
-
+            time.sleep(2)
             items = self._scrape_page()
             for item in items:
                 self.repository.add(item)
             self.view.show_progress(1, len(items))
-
             self.view.show_results(self.repository.all())
-            json_path = self.repository.save_json()
-            csv_path = self.repository.save_csv()
-            self.view.show_saved(json_path, csv_path)
-
+            self.view.show_saved(self.repository.save_json(), self.repository.save_csv())
         except TimeoutException:
-            self.view.show_error(
-                "Timeout : la page n'a pas chargé, ou Amazon a affiché un CAPTCHA / bloqué la requête."
-            )
+            self.view.show_error("Timeout ou CAPTCHA Amazon détecté.")
+        except WebDriverException as exc:
+            self.view.show_error(f"Erreur Selenium : {exc}")
+        except OSError as exc:
+            self.view.show_error(f"Erreur d'enregistrement : {exc}")
         finally:
-            self.driver.quit()
+            if self.driver is not None:
+                self.driver.quit()

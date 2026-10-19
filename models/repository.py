@@ -9,14 +9,17 @@ class ProduitRepository:
     def __init__(self, output_dir: str = "output"):
         self._output_dir = Path(output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        self._items = []
+        self._items: List[Produit] = []
 
     def add(self, item: Produit) -> None:
         self._items.append(item)
         
 
     def all(self) -> List[Produit]:
-        return self._items
+        return list(self._items)
+
+    def get_all(self) -> List[Produit]:
+        return self.all()
 
     def count(self) -> int:
         return len(self._items)
