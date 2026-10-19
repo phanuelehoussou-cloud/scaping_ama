@@ -2,12 +2,15 @@ import re
 import time
 from typing import Callable, List, Optional
 from urllib.parse import urljoin
+import os
 
+from requests import options
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
@@ -16,6 +19,20 @@ from models.item import Produit
 
 
 ProgressCallback = Callable[[Produit], None]
+
+# User-Agents conservés pour les tests contrôlés. Le scraper utilise par
+# défaut le premier profil stable et ne les fait pas tourner automatiquement.
+USER_AGENT_CANDIDATES = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.5790.170 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.62 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:116.0) Gecko/20100101 Firefox/116.0",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:117.0) Gecko/20100101 Firefox/117.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.88 Safari/537.36 Edg/117.0.2045.43",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.92 Mobile Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+)
 
 
 class ScraperController:
@@ -42,10 +59,9 @@ class ScraperController:
         options.add_argument("--no-sandbox")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--lang=fr-FR")
-        options.add_argument(
-            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        )
+        user_agent = os.getenv("SCRAPER_USER_AGENT", USER_AGENT_CANDIDATES[0])
+        options.add_argument(f"user-agent={user_agent}")
+
         return webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=options,
@@ -62,6 +78,61 @@ class ScraperController:
                     return False
                 time.sleep(1.5 * (attempt + 1))
         return False
+
+    def _open_category_from_home(self, category: Categorie) -> bool:
+        """Ouvre une catégorie en utilisant les liens présents dans le DOM Amazon."""
+        if not self._navigate(self.base_url):
+            return False
+        self._dismiss_overlays()
+
+        links = self.driver.find_elements(By.CSS_SELECTOR, "a[href]")
+        category_link = None
+        best_sellers_link = None
+        labels = tuple(label.casefold() for label in category.labels)
+
+        for link in links:
+            text = " ".join(
+                ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+            ).casefold()
+            href = (link.get_attribute("href") or "").casefold()
+            if any(label in text for label in labels):
+                category_link = link
+                break
+            if "gp/bestsellers" in href and "best" in text:
+                best_sellers_link = link
+
+        try:
+            if category_link is not None:
+                self.driver.execute_script("arguments[0].click();", category_link)
+            elif best_sellers_link is not None:
+                self.driver.execute_script("arguments[0].click();", best_sellers_link)
+                WebDriverWait(self.driver, self.wait_seconds).until(
+                    lambda driver: any(
+                        any(label in " ".join(
+                            ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+                        ).casefold() for label in labels)
+                        for link in driver.find_elements(By.CSS_SELECTOR, "a[href]")
+                    )
+                )
+                for link in self.driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+                    text = " ".join(
+                        ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+                    ).casefold()
+                    if any(label in text for label in labels):
+                        self.driver.execute_script("arguments[0].click();", link)
+                        break
+            else:
+                # Dernier parcours UI : recherche de la catégorie depuis l'accueil.
+                search_box = WebDriverWait(self.driver, self.wait_seconds).until(
+                    lambda driver: driver.find_element(By.ID, "twotabsearchtextbox")
+                )
+                search_box.clear()
+                search_box.send_keys(category.nom)
+                search_box.send_keys(Keys.ENTER)
+            self._dismiss_overlays()
+            return True
+        except (NoSuchElementException, TimeoutException, WebDriverException):
+            return False
 
     @staticmethod
     def parse_price(text: str) -> float:
@@ -256,12 +327,8 @@ class ScraperController:
         if limit <= 0:
             return []
 
-        if not self._navigate(self.base_url):
+        if not self._open_category_from_home(category):
             return []
-        self._dismiss_overlays()
-        if not self._navigate(category.url):
-            return []
-        self._dismiss_overlays()
         products: List[Produit] = []
         seen_urls = set()
         visited_pages = set()

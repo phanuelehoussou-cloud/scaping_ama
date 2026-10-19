@@ -1,32 +1,28 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 
-AMAZON_BASE_URL = "https://www.amazon.fr"
+AMAZON_BASE_URL = "https://www.amazon.fr/"
 
 
 @dataclass(frozen=True)
 class Categorie:
     cle: str
     nom: str
-    slug: str
-
-    @property
-    def url(self) -> str:
-        return f"{AMAZON_BASE_URL}gp/bestsellers/{self.slug}"
+    labels: Tuple[str, ...]
 
 
 CATEGORIES: List[Categorie] = [
-    Categorie("1", "Livres", "books"),
-    Categorie("2", "Informatique", "computers"),
-    Categorie("3", "High-Tech", "electronics"),
-    Categorie("4", "Mode", "fashion"),
-    Categorie("5", "Maison et cuisine", "kitchen"),
-    Categorie("6", "Beauté", "beauty"),
-    Categorie("7", "Sports et loisirs", "sporting-goods"),
-    Categorie("8", "Jeux et jouets", "toys"),
-    Categorie("9", "Jeux vidéo", "videogames"),
-    Categorie("10", "Jardin", "garden"),
+    Categorie("1", "Livres", ("Livres", "Books")),
+    Categorie("2", "Informatique", ("Informatique", "Computers")),
+    Categorie("3", "High-Tech", ("High-Tech", "Electronics")),
+    Categorie("4", "Mode", ("Mode", "Fashion")),
+    Categorie("5", "Maison et cuisine", ("Maison et cuisine", "Home and Kitchen", "Kitchen")),
+    Categorie("6", "Beauté", ("Beauté", "Beauty")),
+    Categorie("7", "Sports et loisirs", ("Sports et loisirs", "Sports & Outdoors", "Sporting Goods")),
+    Categorie("8", "Jeux et jouets", ("Jeux et jouets", "Toys & Games", "Toys")),
+    Categorie("9", "Jeux vidéo", ("Jeux vidéo", "Video Games")),
+    Categorie("10", "Jardin", ("Jardin", "Garden")),
 ]
 
 
