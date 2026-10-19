@@ -29,7 +29,8 @@ console = Console()
 def ask_menu_number(prompt: str, minimum: int, maximum: int, default: Optional[int] = None) -> int:
     """Demande un entier dans une plage et recommence tant que la saisie est invalide."""
     while True:
-        value = IntPrompt.ask(prompt, default=default, show_default=default is not None)
+        # Aucun défaut : une saisie vide ne doit pas être acceptée.
+        value = IntPrompt.ask(prompt)
         if minimum <= value <= maximum:
             return value
         console.print(f"[yellow]Choisis un nombre entre {minimum} et {maximum}.[/yellow]")
@@ -38,7 +39,7 @@ def ask_menu_number(prompt: str, minimum: int, maximum: int, default: Optional[i
 def ask_positive_number(prompt: str, default: int = 10) -> int:
     """Demande un nombre strictement positif."""
     while True:
-        value = IntPrompt.ask(prompt, default=default, show_default=True)
+        value = IntPrompt.ask(prompt)
         if value > 0:
             return value
         console.print("[yellow]Le nombre doit être supérieur à zéro.[/yellow]")

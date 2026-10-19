@@ -1,9 +1,10 @@
 import re
 import time
 from typing import Callable, List, Optional
+from urllib.parse import urljoin
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -21,7 +22,7 @@ class ScraperController:
     """Scraper Amazon multi-pages avec défilement et déduplication."""
 
     # Classes de cartes produit Amazon. On évite les identifiants instables.
-    CARD_SELECTOR = ".zg-grid-general-faceout, .a-carousel-card, .s-result-item"
+    CARD_SELECTOR = ".zg-grid-general-faceout, .a-carousel-card, .s-result-item, .a-cardui"
     NEXT_PAGE_SELECTORS = (
         ".a-pagination .a-last a",
         ".a-last a",
@@ -49,6 +50,18 @@ class ScraperController:
             service=Service(ChromeDriverManager().install()),
             options=options,
         )
+
+    def _navigate(self, url: str, attempts: int = 3) -> bool:
+        """Navigue avec quelques tentatives pour absorber les erreurs réseau temporaires."""
+        for attempt in range(attempts):
+            try:
+                self.driver.get(url)
+                return True
+            except WebDriverException:
+                if attempt == attempts - 1:
+                    return False
+                time.sleep(1.5 * (attempt + 1))
+        return False
 
     @staticmethod
     def parse_price(text: str) -> float:
@@ -85,6 +98,25 @@ class ScraperController:
     def _find_all_cards(self):
         return self.driver.find_elements(By.CSS_SELECTOR, self.CARD_SELECTOR)
 
+    def _dismiss_overlays(self) -> None:
+        """Ferme les écrans de consentement qui peuvent masquer la page."""
+        selectors = (
+            "#sp-cc-accept",
+            "#sp-cc-rejectall-link",
+            "input[name='accept']",
+            "button[name='accept']",
+            ".a-button-primary[name='accept']",
+        )
+        for selector in selectors:
+            try:
+                buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if buttons and buttons[0].is_displayed():
+                    self.driver.execute_script("arguments[0].click();", buttons[0])
+                    time.sleep(0.5)
+                    return
+            except Exception:
+                continue
+
     def _get_image(self, card) -> str:
         self.driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", card
@@ -106,7 +138,29 @@ class ScraperController:
 
     def _wait_for_cards(self):
         return WebDriverWait(self.driver, self.wait_seconds).until(
-            lambda driver: self._find_all_cards()
+            lambda driver: self._find_all_cards() or self._find_product_links()
+        )
+
+    def _find_product_links(self):
+        """Retourne les liens produits, même si le conteneur change."""
+        links = self.driver.find_elements(
+            By.CSS_SELECTOR, "a[href*='/dp/'], a[href*='/gp/product/']"
+        )
+        return [link for link in links if link.is_displayed()]
+
+    def _product_container_from_link(self, link):
+        return self.driver.execute_script(
+            """
+            let node = arguments[0];
+            for (let i = 0; i < 8 && node; i++, node = node.parentElement) {
+                const text = (node.innerText || '').trim();
+                if (text.length > 20 && node.querySelector('img, .a-price, [class*="price"]')) {
+                    return node;
+                }
+            }
+            return arguments[0].parentElement;
+            """,
+            link,
         )
 
     def _scroll_until_stable(self) -> None:
@@ -129,6 +183,7 @@ class ScraperController:
         title = self._find_first(card, [
             ".p13n-sc-truncate-desktop-type2",
             ".p13n-sc-truncate",
+            "[class*='p13n-sc-css-line-clamp']",
             ".a-size-medium",
             ".a-size-base-plus",
         ])
@@ -136,12 +191,21 @@ class ScraperController:
             ".a-link-normal.aok-block",
             ".a-link-normal",
         ])
-        if title is None or link is None:
+        if link is None:
             return None
 
-        name = (title.get_attribute("title") or title.text or "").strip()
-        url = link.get_attribute("href") or ""
-        if not name or not url or "/dp/" not in url and "/gp/product/" not in url:
+        url = urljoin(self.driver.current_url, link.get_attribute("href") or "")
+        if not url or "/dp/" not in url and "/gp/product/" not in url:
+            return None
+
+        if title is None:
+            title = self._find_first(card, ["img[alt]"])
+        name = " ".join(
+            ((title.get_attribute("title") if title else "")
+             or (title.get_attribute("alt") if title else "")
+             or (title.text if title else "")).split()
+        )
+        if not name:
             return None
 
         price = self._find_first(card, [
@@ -180,7 +244,7 @@ class ScraperController:
         if "a-disabled" in classes:
             return None
         href = next_link.get_attribute("href") or ""
-        return href if href.startswith("http") else None
+        return urljoin(self.driver.current_url, href) if href else None
 
     def scrape_category(
         self,
@@ -192,8 +256,12 @@ class ScraperController:
         if limit <= 0:
             return []
 
-        self.driver.get(self.base_url)
-        self.driver.get(category.url)
+        if not self._navigate(self.base_url):
+            return []
+        self._dismiss_overlays()
+        if not self._navigate(category.url):
+            return []
+        self._dismiss_overlays()
         products: List[Produit] = []
         seen_urls = set()
         visited_pages = set()
@@ -211,6 +279,12 @@ class ScraperController:
 
             self._scroll_until_stable()
             cards = self._find_all_cards()
+            if not cards:
+                cards = [
+                    self._product_container_from_link(link)
+                    for link in self._find_product_links()
+                ]
+                cards = [card for card in cards if card is not None]
             before_page = len(products)
             for card in cards:
                 if len(products) >= limit:
@@ -230,7 +304,9 @@ class ScraperController:
             next_url = self._next_page_url()
             if not next_url or len(products) == before_page:
                 break
-            self.driver.get(next_url)
+            if not self._navigate(next_url):
+                break
+            self._dismiss_overlays()
             time.sleep(1.2)
 
         return products[:limit]

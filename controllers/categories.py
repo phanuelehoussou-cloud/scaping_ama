@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import List
 
 
-AMAZON_BASE_URL = "https://www.amazon.fr/"
+AMAZON_BASE_URL = "https://www.amazon.fr"
 
 
 @dataclass(frozen=True)
