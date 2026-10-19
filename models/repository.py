@@ -30,8 +30,15 @@ class ProduitRepository:
     def save_csv(self, filename: str = "produits.csv") -> Path:
         path = self._output_dir / filename
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["nom", "prix", "note", "disponibilite", "url"])
+            writer = csv.DictWriter(f, fieldnames=["nom", "prix", "note", "disponibilite", "url", "image"])
             writer.writeheader()
             for item in self._items:
                 writer.writerow(item.to_dict())
         return path
+    
+    def load_json(self, filename: str = "produits.json") -> List[Produit]:
+        path = self._output_dir / filename
+        if not path.exists():
+            return []
+        with open(path, encoding="utf-8") as f:
+            return [Produit(**data) for data in json.load(f)]

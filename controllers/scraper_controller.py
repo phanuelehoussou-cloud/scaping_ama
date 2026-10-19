@@ -64,6 +64,23 @@ class ScraperController:
         if match:
             return float(match.group(1).replace(",", "."))
         return 0.0
+    
+    def _get_image(self, card) -> str:
+        """Récupère l'URL de l'image d'une carte (gère le lazy-loading d'Amazon)."""
+        # Amazon charge les images au scroll : on amène la carte à l'écran
+        self.driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", card
+        )
+        time.sleep(0.3)
+        try:
+            img = card.find_element(By.CSS_SELECTOR, "img")
+        except NoSuchElementException:
+            return ""
+        src = img.get_attribute("src") or ""
+        # Si c'est encore un placeholder (data:image...), on tente les autres attributs
+        if not src.startswith("http"):
+            src = img.get_attribute("data-src") or ""
+        return src
 
     def _scrape_page(self):
         """
@@ -130,7 +147,7 @@ class ScraperController:
 
                 if nom and url:
                     items.append(Produit(nom=nom.strip(), prix=prix, note=note,
-                                          disponibilite=disponibilite, url=url))
+                                            disponibilite=disponibilite, url=url))
             except NoSuchElementException:
                 continue
         return items

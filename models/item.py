@@ -7,6 +7,7 @@ class Produit:
     note: float
     disponibilite: bool
     url: str
+    image: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

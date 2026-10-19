@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Produits Amazon</title>
+    <style>
+        body { font-family: sans-serif; margin: 2rem; background: #f5f5f5; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
+        .card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+        .card h3 { font-size: 1rem; margin-top: 0; }
+        .prix { font-size: 1.2rem; font-weight: bold; color: #b12704; }
+        .note { color: #f59e0b; }
+        .stock { font-size: .85rem; color: #2e7d32; }
+        .rupture { color: #c62828; }
+        a.btn { display: inline-block; margin-top: .5rem; padding: .4rem .8rem; background: #ffd814; border-radius: 6px; text-decoration: none; color: #111; }
+    </style>
+</head>
+<body>
+    <h1>Produits ({{ produits|length }})</h1>
+
+    {% if not produits %}
+        <p>Aucun produit. Lance d'abord <code>python main.py</code> pour scraper.</p>
+    {% endif %}
+
+    <div class="grid">
+        {% for p in produits %}
+        <div class="card">
+            <h3>{{ p.nom }}</h3>
+            <p class="prix">{{ "%.2f"|format(p.prix) }} €</p>
+            <p class="note">★ {{ p.note }} / 5</p>
+            <p class="stock {{ '' if p.disponibilite else 'rupture' }}">
+            {{ "En stock" if p.disponibilite else "Indisponible" }}
+            </p>
+            <a class="btn" href="{{ p.url }}" target="_blank" rel="noopener">Voir sur Amazon</a>
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
