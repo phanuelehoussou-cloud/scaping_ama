@@ -1,66 +1,55 @@
 # Amazon Scraper Pro
 
-Application Python de scraping Amazon par catégories, basée sur `https://www.amazon.fr/`, avec progression dans le terminal, exports CSV/JSON et galerie web.
+## Prérequis
 
-## Fonctionnalités
+- Python installé
+- Google Chrome installé (le pilote est téléchargé automatiquement au premier lancement)
 
-- choix interactif d'une catégorie ou de toutes les catégories proposées ;
-- nombre de produits configurable par catégorie ;
-- extraction du nom, prix, note, disponibilité, image, URL et catégorie ;
-- barre de progression riche dans le terminal ;
-- export CSV, JSON, ou les deux ;
-- galerie Flask responsive avec filtres par catégorie ;
-- réutilisation du même navigateur Selenium pour toutes les catégories.
-- sélecteurs CSS orientés classes Amazon (`a-cardui`, `a-carousel-card`, `s-result-item`, etc.).
+## Lancer le projet
 
-## Installation
-
-Le dossier `.env` du projet est l'environnement virtuel Python. Sous PowerShell :
+1. Ouvrir PowerShell dans le dossier du projet :
 
 ```powershell
-cd "C:\Users\ELIE EHOUSSOU\Documents\PERSONNEL\scaping_ama"
-.\.env\Scripts\Activate.ps1
+cd " C:\Users\AHIBO\Documents\IIT_school\PYTHON\projet_scrapping\scaping_ama> "
+```
+
+2. Activer l'environnement virtuel (le dossier `.venv`) :
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+3. Installer les dépendances (à faire une seule fois) :
+
+```powershell
 python -m pip install -r requirements.txt
 ```
 
-Chrome doit être installé. `webdriver-manager` téléchargera automatiquement le pilote compatible au premier lancement.
-
-## Lancer le scraping
+4. Lancer le scraping :
 
 ```powershell
-.\.env\Scripts\python.exe main.py
+python main.py
 ```
 
-Le programme demande successivement :
+5. Répondre aux questions du programme :
+   1. la catégorie à scraper ;
+   2. le nombre de produits par catégorie ;
+   3. le format d'export (CSV, JSON, les deux, ou aucun) ;
+   4. ouvrir ou non la galerie web.
 
-1. la catégorie à scraper ;
-2. le nombre de produits par catégorie ;
-3. le format d'export (`csv`, `json`, `both` ou `aucun`) ;
-4. s'il faut ouvrir la galerie web.
+Les fichiers sont créés dans `output/produits.json` et `output/produits.csv`.
 
-Les fichiers sont générés dans `output/produits.json` et `output/produits.csv`.
-
-## Lancer uniquement la galerie web
+## Ouvrir la galerie sans relancer le scraping
 
 ```powershell
-.\.env\Scripts\python.exe web.py
+python web.py
 ```
 
-Puis ouvrir <http://127.0.0.1:5000>.
+Puis ouvrir <http://127.0.0.1:5000> dans le navigateur.
 
-## Configuration
-
-Le dossier `.env` est volontairement utilisé comme environnement virtuel Python. Les options d'exécution peuvent être configurées par variables d'environnement :
+## Option : voir Chrome travailler
 
 ```powershell
-$env:SCRAPER_HEADLESS = "1"  # 0 pour afficher Chrome
-$env:FLASK_DEBUG = "0"       # 1 uniquement en développement
+$env:SCRAPER_HEADLESS = "0"
+python main.py
 ```
-
-## Sessions multiples
-
-Après chaque scraping, le programme demande si l'utilisateur veut `continuer` ou `sortir`. Le choix `continuer` réaffiche le menu des catégories pour démarrer une nouvelle session. Le serveur web déjà ouvert est réutilisé au lieu d'être lancé une seconde fois.
-
-## Notes importantes
-
-Amazon peut afficher un CAPTCHA, modifier ses sélecteurs HTML ou limiter les requêtes automatisées. Le scraper traite alors la catégorie concernée et continue avec les suivantes. Utilisez ce projet dans le respect des conditions d'utilisation et de la réglementation applicables.
