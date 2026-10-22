@@ -1,8 +1,6 @@
-import os
 import subprocess
 import sys
 import webbrowser
-from pathlib import Path
 from typing import List, Optional
 
 from rich.console import Console
@@ -15,14 +13,14 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
-from rich.prompt import IntPrompt, Prompt
+from rich.prompt import IntPrompt
 
-from controllers.categories import CATEGORIES, Categorie
-from controllers.scraper_controller import ScraperController
-from models.repository import ProduitRepository
+import config
+from app.controllers.categories import CATEGORIES, Categorie
+from app.controllers.scraper_controller import ScraperController
+from app.models.repository import ProduitRepository
 
 
-BASE_DIR = Path(__file__).resolve().parent
 console = Console()
 
 
@@ -36,10 +34,10 @@ def ask_menu_number(prompt: str, minimum: int, maximum: int, default: Optional[i
         console.print(f"[yellow]Choisis un nombre entre {minimum} et {maximum}.[/yellow]")
 
 
-def ask_positive_number(prompt: str, default: int = 10) -> int:
+def ask_positive_number(prompt: str, default: int = config.DEFAULT_PRODUCTS_PER_CATEGORY) -> int:
     """Demande un nombre strictement positif."""
     while True:
-        value = IntPrompt.ask(prompt)
+        value = IntPrompt.ask(prompt, default=default)
         if value > 0:
             return value
         console.print("[yellow]Le nombre doit être supérieur à zéro.[/yellow]")
@@ -63,7 +61,7 @@ def ask_limit(categories: List[Categorie]) -> int:
         if len(categories) > 1
         else f"Produits à scraper dans {categories[0].nom}"
     )
-    return ask_positive_number(label)
+    return ask_positive_number(label, default=config.DEFAULT_PRODUCTS_PER_CATEGORY)
 
 
 def save_results(repository: ProduitRepository) -> bool:
@@ -103,19 +101,19 @@ def offer_web_viewer(
         return existing_process
 
     if existing_process and existing_process.poll() is None:
-        console.print("[green]Galerie déjà ouverte sur http://127.0.0.1:5000[/green]")
-        webbrowser.open("http://127.0.0.1:5000")
+        console.print(f"[green]Galerie déjà ouverte sur {config.WEB_URL}[/green]")
+        webbrowser.open(config.WEB_URL)
         return existing_process
 
     process = subprocess.Popen(
-        [sys.executable, str(BASE_DIR / "web.py")],
-        cwd=BASE_DIR,
+        [sys.executable, str(config.BASE_DIR / "web.py")],
+        cwd=config.BASE_DIR,
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
     console.print(
-        f"[green]Galerie disponible sur http://127.0.0.1:5000[/green] (PID {process.pid})"
+        f"[green]Galerie disponible sur {config.WEB_URL}[/green] (PID {process.pid})"
     )
-    webbrowser.open("http://127.0.0.1:5000")
+    webbrowser.open(config.WEB_URL)
     return process
 
 
@@ -123,8 +121,7 @@ def run_scraping_session(web_process=None):
     categories = choose_categories()
     limit = ask_limit(categories)
     total = len(categories) * limit
-    headless = os.getenv("SCRAPER_HEADLESS", "1") != "0"
-    repository = ProduitRepository(output_dir=str(BASE_DIR / "output"))
+    repository = ProduitRepository(output_dir=config.OUTPUT_DIR)
     controller = None
     progress = Progress(
         SpinnerColumn(),
@@ -135,7 +132,7 @@ def run_scraping_session(web_process=None):
     )
 
     try:
-        controller = ScraperController(headless=headless)
+        controller = ScraperController(headless=config.HEADLESS)
         with progress:
             task = progress.add_task("Préparation...", total=total)
             for category in categories:

@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Tuple
 
-
-AMAZON_BASE_URL = "https://www.amazon.fr/"
+from config import AMAZON_BASE_URL
 
 
 @dataclass(frozen=True)

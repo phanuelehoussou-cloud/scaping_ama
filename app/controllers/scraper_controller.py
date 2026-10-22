@@ -2,9 +2,7 @@ import re
 import time
 from typing import Callable, List, Optional
 from urllib.parse import urljoin
-import os
 
-from requests import options
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
@@ -14,60 +12,45 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
-from controllers.categories import AMAZON_BASE_URL, Categorie
-from models.item import Produit
+import config
+from app.controllers.categories import AMAZON_BASE_URL, Categorie
+from app.models.item import Produit
 
 
 ProgressCallback = Callable[[Produit], None]
-
-# User-Agents conservés pour les tests contrôlés. Le scraper utilise par
-# défaut le premier profil stable et ne les fait pas tourner automatiquement.
-USER_AGENT_CANDIDATES = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.5790.170 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.62 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:116.0) Gecko/20100101 Firefox/116.0",
-    "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:117.0) Gecko/20100101 Firefox/117.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.88 Safari/537.36 Edg/117.0.2045.43",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.92 Mobile Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-)
 
 
 class ScraperController:
     """Scraper Amazon multi-pages avec défilement et déduplication."""
 
-    # Classes de cartes produit Amazon. On évite les identifiants instables.
-    CARD_SELECTOR = ".zg-grid-general-faceout, .a-carousel-card, .s-result-item, .a-cardui"
-    NEXT_PAGE_SELECTORS = (
-        ".a-pagination .a-last a",
-        ".a-last a",
-        ".s-pagination-next",
-    )
+    CARD_SELECTOR = config.CARD_SELECTOR
+    NEXT_PAGE_SELECTORS = config.NEXT_PAGE_SELECTORS
 
-    def __init__(self, headless: bool = True, wait_seconds: int = 12):
-        self.wait_seconds = wait_seconds
-        self.base_url = AMAZON_BASE_URL
-        self.driver = self._init_driver(headless)
+    def __init__(
+        self,
+        headless: Optional[bool] = None,
+        wait_seconds: Optional[int] = None,
+        base_url: Optional[str] = None,
+    ):
+        self.headless = config.HEADLESS if headless is None else headless
+        self.wait_seconds = config.WAIT_SECONDS if wait_seconds is None else wait_seconds
+        self.base_url = base_url or AMAZON_BASE_URL
+        self.driver = self._init_driver(self.headless)
 
     def _init_driver(self, headless: bool):
         options = Options()
         if headless:
             options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--lang=fr-FR")
-        user_agent = os.getenv("SCRAPER_USER_AGENT", USER_AGENT_CANDIDATES[0])
-        options.add_argument(f"user-agent={user_agent}")
+        for arg in config.CHROME_ARGUMENTS:
+            options.add_argument(arg)
+        options.add_argument(f"user-agent={config.DEFAULT_USER_AGENT}")
 
         return webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=options,
         )
 
-    def _navigate(self, url: str, attempts: int = 3) -> bool:
+    def _navigate(self, url: str, attempts: int = config.NAVIGATE_ATTEMPTS) -> bool:
         """Navigue avec quelques tentatives pour absorber les erreurs réseau temporaires."""
         for attempt in range(attempts):
             try:
@@ -76,7 +59,7 @@ class ScraperController:
             except WebDriverException:
                 if attempt == attempts - 1:
                     return False
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(config.NAVIGATE_BACKOFF_FACTOR * (attempt + 1))
         return False
 
     def _open_category_from_home(self, category: Categorie) -> bool:
@@ -124,7 +107,7 @@ class ScraperController:
             else:
                 # Dernier parcours UI : recherche de la catégorie depuis l'accueil.
                 search_box = WebDriverWait(self.driver, self.wait_seconds).until(
-                    lambda driver: driver.find_element(By.ID, "twotabsearchtextbox")
+                    lambda driver: driver.find_element(By.ID, config.SEARCH_INPUT_ID)
                 )
                 search_box.clear()
                 search_box.send_keys(category.nom)
@@ -171,19 +154,12 @@ class ScraperController:
 
     def _dismiss_overlays(self) -> None:
         """Ferme les écrans de consentement qui peuvent masquer la page."""
-        selectors = (
-            "#sp-cc-accept",
-            "#sp-cc-rejectall-link",
-            "input[name='accept']",
-            "button[name='accept']",
-            ".a-button-primary[name='accept']",
-        )
-        for selector in selectors:
+        for selector in config.OVERLAY_CONSENT_SELECTORS:
             try:
                 buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 if buttons and buttons[0].is_displayed():
                     self.driver.execute_script("arguments[0].click();", buttons[0])
-                    time.sleep(0.5)
+                    time.sleep(config.CONSENT_DISMISS_PAUSE_SECONDS)
                     return
             except Exception:
                 continue
@@ -192,16 +168,11 @@ class ScraperController:
         self.driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", card
         )
-        time.sleep(0.1)
-        image = self._find_first(card, [
-            ".s-image",
-            ".a-dynamic-image",
-            ".product-image",
-            "img",
-        ])
+        time.sleep(config.IMAGE_SCROLL_PAUSE_SECONDS)
+        image = self._find_first(card, config.IMAGE_SELECTORS)
         if image is None:
             return ""
-        for attribute in ("src", "data-src", "data-old-hires"):
+        for attribute in config.IMAGE_ATTRIBUTES:
             value = image.get_attribute(attribute) or ""
             if value.startswith("http"):
                 return value
@@ -215,7 +186,7 @@ class ScraperController:
     def _find_product_links(self):
         """Retourne les liens produits, même si le conteneur change."""
         links = self.driver.find_elements(
-            By.CSS_SELECTOR, "a[href*='/dp/'], a[href*='/gp/product/']"
+            By.CSS_SELECTOR, config.PRODUCT_LINK_SELECTOR
         )
         return [link for link in links if link.is_displayed()]
 
@@ -238,30 +209,21 @@ class ScraperController:
         """Force le chargement des cartes lazy-loaded avant l'extraction."""
         previous_count = 0
         stable_rounds = 0
-        for _ in range(8):
+        for _ in range(config.SCROLL_MAX_ROUNDS):
             current_count = len(self._find_all_cards())
             if current_count == previous_count:
                 stable_rounds += 1
             else:
                 stable_rounds = 0
-            if stable_rounds >= 2:
+            if stable_rounds >= config.SCROLL_STABLE_THRESHOLD:
                 break
             previous_count = current_count
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.7)
+            time.sleep(config.SCROLL_PAUSE_SECONDS)
 
     def _parse_card(self, card, category: Categorie) -> Optional[Produit]:
-        title = self._find_first(card, [
-            ".p13n-sc-truncate-desktop-type2",
-            ".p13n-sc-truncate",
-            "[class*='p13n-sc-css-line-clamp']",
-            ".a-size-medium",
-            ".a-size-base-plus",
-        ])
-        link = self._find_first(card, [
-            ".a-link-normal.aok-block",
-            ".a-link-normal",
-        ])
+        title = self._find_first(card, config.TITLE_SELECTORS)
+        link = self._find_first(card, config.LINK_SELECTORS)
         if link is None:
             return None
 
@@ -279,12 +241,8 @@ class ScraperController:
         if not name:
             return None
 
-        price = self._find_first(card, [
-            ".p13n-sc-price",
-            ".a-price .a-offscreen",
-            ".a-price-whole",
-        ])
-        rating = self._find_first(card, [".a-icon-alt", ".a-icon-star"])
+        price = self._find_first(card, config.PRICE_SELECTORS)
+        rating = self._find_first(card, config.RATING_SELECTORS)
         rating_text = ""
         if rating:
             rating_text = (
@@ -295,7 +253,7 @@ class ScraperController:
         card_text = (card.text or "").lower()
         unavailable = any(
             marker in card_text
-            for marker in ("indisponible", "rupture de stock", "épuisé")
+            for marker in config.UNAVAILABLE_MARKERS
         )
         return Produit(
             nom=name,
@@ -332,7 +290,8 @@ class ScraperController:
         products: List[Produit] = []
         seen_urls = set()
         visited_pages = set()
-        max_pages = max(1, min(50, (limit + 19) // 20 + 5))
+        estimated_pages = (limit + config.ITEMS_PER_PAGE_ESTIMATE - 1) // config.ITEMS_PER_PAGE_ESTIMATE + config.PAGE_BUFFER
+        max_pages = max(1, min(config.MAX_PAGES_LIMIT, estimated_pages))
 
         for _ in range(max_pages):
             current_url = self.driver.current_url
@@ -356,7 +315,8 @@ class ScraperController:
             for card in cards:
                 if len(products) >= limit:
                     break
-                if "brand-story" in (card.get_attribute("class") or ""):
+                card_class = card.get_attribute("class") or ""
+                if any(ignored in card_class for ignored in config.IGNORED_CARD_CLASSES):
                     continue
                 product = self._parse_card(card, category)
                 if product is None or product.url in seen_urls:
@@ -374,7 +334,7 @@ class ScraperController:
             if not self._navigate(next_url):
                 break
             self._dismiss_overlays()
-            time.sleep(1.2)
+            time.sleep(config.PAGE_TRANSITION_DELAY_SECONDS)
 
         return products[:limit]
 

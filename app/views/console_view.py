@@ -1,5 +1,5 @@
 from typing import List
-from models.item import Produit
+from app.models.item import Produit
 
 
 class ConsoleView:
