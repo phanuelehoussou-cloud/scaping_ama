@@ -26,9 +26,6 @@ class ProduitRepository:
     def all(self) -> List[Produit]:
         return list(self._items)
 
-    def get_all(self) -> List[Produit]:
-        return list(self._items)
-
     def count(self) -> int:
         return len(self._items)
 
@@ -41,7 +38,7 @@ class ProduitRepository:
     def save_csv(self, filename: str = config.DEFAULT_CSV_FILENAME) -> Path:
         path = self._output_dir / filename
         with path.open("w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.DictWriter(file, fieldnames=self.FIELDNAMES)
+            writer = csv.DictWriter(file, fieldnames=self.FIELDNAMES, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(item.to_dict() for item in self._items)
         return path

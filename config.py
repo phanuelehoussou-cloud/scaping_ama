@@ -24,8 +24,10 @@ OUTPUT_DIR: Path = Path(os.getenv("SCRAPER_OUTPUT_DIR", str(BASE_DIR / "output")
 # Noms et chemins des fichiers de sortie par défaut
 DEFAULT_JSON_FILENAME: str = "produits.json"
 DEFAULT_CSV_FILENAME: str = "produits.csv"
+DEFAULT_DB_FILENAME: str = "produits.db"
 DEFAULT_JSON_PATH: Path = OUTPUT_DIR / DEFAULT_JSON_FILENAME
 DEFAULT_CSV_PATH: Path = OUTPUT_DIR / DEFAULT_CSV_FILENAME
+SQLITE_DB_PATH: Path = OUTPUT_DIR / DEFAULT_DB_FILENAME
 
 # Répertoire des templates Flask pour la galerie web
 TEMPLATES_DIR: Path = BASE_DIR / "app" / "views" / "templates"
@@ -172,9 +174,11 @@ LINK_SELECTORS: Tuple[str, ...] = (
 
 # Sélecteurs du prix
 PRICE_SELECTORS: Tuple[str, ...] = (
-    ".p13n-sc-price",
     ".a-price .a-offscreen",
+    ".p13n-sc-price",
+    ".a-price",
     ".a-price-whole",
+    ".a-color-price",
 )
 
 # Sélecteurs de la note / notation étoiles

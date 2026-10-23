@@ -1,0 +1,392 @@
+import re
+import time
+from typing import Callable, List, Optional
+from urllib.parse import urljoin
+
+from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+
+import config
+from app.models.categories import AMAZON_BASE_URL, Categorie
+from app.models.item import Produit
+
+
+ProgressCallback = Callable[[Produit], None]
+
+
+class AmazonScraper:
+    """Scraper Amazon multi-pages avec défilement et déduplication."""
+
+    CARD_SELECTOR = config.CARD_SELECTOR
+    NEXT_PAGE_SELECTORS = config.NEXT_PAGE_SELECTORS
+
+    def __init__(
+        self,
+        headless: Optional[bool] = None,
+        wait_seconds: Optional[int] = None,
+        base_url: Optional[str] = None,
+    ):
+        self.headless = config.HEADLESS if headless is None else headless
+        self.wait_seconds = config.WAIT_SECONDS if wait_seconds is None else wait_seconds
+        self.base_url = base_url or AMAZON_BASE_URL
+        self.driver = self._init_driver(self.headless)
+
+    def _init_driver(self, headless: bool):
+        options = Options()
+        if headless:
+            options.add_argument("--headless=new")
+        for arg in config.CHROME_ARGUMENTS:
+            options.add_argument(arg)
+        options.add_argument(f"user-agent={config.DEFAULT_USER_AGENT}")
+
+        return webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options,
+        )
+
+    def _navigate(self, url: str, attempts: int = config.NAVIGATE_ATTEMPTS) -> bool:
+        """Navigue avec quelques tentatives pour absorber les erreurs réseau temporaires."""
+        for attempt in range(attempts):
+            try:
+                self.driver.get(url)
+                return True
+            except WebDriverException:
+                if attempt == attempts - 1:
+                    return False
+                time.sleep(config.NAVIGATE_BACKOFF_FACTOR * (attempt + 1))
+        return False
+
+    def _open_category_from_home(self, category: Categorie) -> bool:
+        """Ouvre une catégorie en utilisant les liens présents dans le DOM Amazon."""
+        if not self._navigate(self.base_url):
+            return False
+        self._dismiss_overlays()
+
+        links = self.driver.find_elements(By.CSS_SELECTOR, "a[href]")
+        category_link = None
+        best_sellers_link = None
+        labels = tuple(label.casefold() for label in category.labels)
+
+        for link in links:
+            text = " ".join(
+                ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+            ).casefold()
+            href = (link.get_attribute("href") or "").casefold()
+            if any(label in text for label in labels):
+                category_link = link
+                break
+            if "gp/bestsellers" in href and "best" in text:
+                best_sellers_link = link
+
+        try:
+            if category_link is not None:
+                self.driver.execute_script("arguments[0].click();", category_link)
+            elif best_sellers_link is not None:
+                self.driver.execute_script("arguments[0].click();", best_sellers_link)
+                WebDriverWait(self.driver, self.wait_seconds).until(
+                    lambda driver: any(
+                        any(label in " ".join(
+                            ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+                        ).casefold() for label in labels)
+                        for link in driver.find_elements(By.CSS_SELECTOR, "a[href]")
+                    )
+                )
+                for link in self.driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+                    text = " ".join(
+                        ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+                    ).casefold()
+                    if any(label in text for label in labels):
+                        self.driver.execute_script("arguments[0].click();", link)
+                        break
+            else:
+                # Dernier parcours UI : recherche de la catégorie depuis l'accueil.
+                search_box = WebDriverWait(self.driver, self.wait_seconds).until(
+                    lambda driver: driver.find_element(By.ID, config.SEARCH_INPUT_ID)
+                )
+                search_box.clear()
+                search_box.send_keys(category.nom)
+                search_box.send_keys(Keys.ENTER)
+            self._dismiss_overlays()
+            return True
+        except (NoSuchElementException, TimeoutException, WebDriverException):
+            return False
+
+    @staticmethod
+    def parse_price(text: str) -> float:
+        if not text:
+            return 0.0
+        # 1. Motif standard de prix avec décimales (ex: 24,99 € ou 1 299,00 € ou 14.99)
+        match = re.search(r"(\d+(?:[\s\u00a0]\d+)*)[.,](\d{2})", text)
+        if match:
+            whole = re.sub(r"\D", "", match.group(1))
+            dec = match.group(2)
+            try:
+                return float(f"{whole}.{dec}")
+            except ValueError:
+                pass
+
+        # 2. Motif entier avec symbole monétaire (ex: 25 €)
+        match_int = re.search(r"(\d+(?:[\s\u00a0]\d+)*)\s*€", text)
+        if match_int:
+            try:
+                return float(re.sub(r"\D", "", match_int.group(1)))
+            except ValueError:
+                pass
+
+        # 3. Nettoyage générique en fallback
+        cleaned = re.sub(r"[^\d,.]", "", text)
+        if not cleaned:
+            return 0.0
+        comma = cleaned.rfind(",")
+        dot = cleaned.rfind(".")
+        decimal = "," if comma > dot else "."
+        if comma >= 0 and dot >= 0:
+            cleaned = cleaned.replace("." if decimal == "," else ",", "")
+        try:
+            return float(cleaned.replace(decimal, "."))
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def parse_rating(text: str) -> float:
+        star_class = re.search(r"a-star-(\d)-(\d)", text)
+        if star_class:
+            return float(f"{star_class.group(1)}.{star_class.group(2)}")
+        rating = re.search(r"(\d[.,]?\d?)", text)
+        return float(rating.group(1).replace(",", ".")) if rating else 0.0
+
+    @staticmethod
+    def _find_first(container, selectors):
+        for selector in selectors:
+            try:
+                return container.find_element(By.CSS_SELECTOR, selector)
+            except NoSuchElementException:
+                continue
+        return None
+
+    def _find_all_cards(self):
+        return self.driver.find_elements(By.CSS_SELECTOR, self.CARD_SELECTOR)
+
+    def _dismiss_overlays(self) -> None:
+        """Ferme les écrans de consentement qui peuvent masquer la page."""
+        for selector in config.OVERLAY_CONSENT_SELECTORS:
+            try:
+                buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if buttons and buttons[0].is_displayed():
+                    self.driver.execute_script("arguments[0].click();", buttons[0])
+                    time.sleep(config.CONSENT_DISMISS_PAUSE_SECONDS)
+                    return
+            except Exception:
+                continue
+
+    def _get_image(self, card) -> str:
+        self.driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", card
+        )
+        time.sleep(config.IMAGE_SCROLL_PAUSE_SECONDS)
+        image = self._find_first(card, config.IMAGE_SELECTORS)
+        if image is None:
+            return ""
+        for attribute in config.IMAGE_ATTRIBUTES:
+            value = image.get_attribute(attribute) or ""
+            if value.startswith("http"):
+                return value
+        return ""
+
+    def _wait_for_cards(self):
+        return WebDriverWait(self.driver, self.wait_seconds).until(
+            lambda driver: self._find_all_cards() or self._find_product_links()
+        )
+
+    def _find_product_links(self):
+        """Retourne les liens produits, même si le conteneur change."""
+        links = self.driver.find_elements(
+            By.CSS_SELECTOR, config.PRODUCT_LINK_SELECTOR
+        )
+        return [link for link in links if link.is_displayed()]
+
+    def _product_container_from_link(self, link):
+        return self.driver.execute_script(
+            """
+            let node = arguments[0];
+            for (let i = 0; i < 8 && node; i++, node = node.parentElement) {
+                const text = (node.innerText || '').trim();
+                if (text.length > 20 && node.querySelector('img, .a-price, [class*="price"]')) {
+                    return node;
+                }
+            }
+            return arguments[0].parentElement;
+            """,
+            link,
+        )
+
+    def _scroll_until_stable(self) -> None:
+        """Force le chargement des cartes lazy-loaded avant l'extraction."""
+        previous_count = 0
+        stable_rounds = 0
+        for _ in range(config.SCROLL_MAX_ROUNDS):
+            current_count = len(self._find_all_cards())
+            if current_count == previous_count:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            if stable_rounds >= config.SCROLL_STABLE_THRESHOLD:
+                break
+            previous_count = current_count
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(config.SCROLL_PAUSE_SECONDS)
+
+    def _parse_card(self, card, category: Categorie) -> Optional[Produit]:
+        title = self._find_first(card, config.TITLE_SELECTORS)
+        link = self._find_first(card, config.LINK_SELECTORS)
+        if link is None:
+            return None
+
+        url = urljoin(self.driver.current_url, link.get_attribute("href") or "")
+        if not url or "/dp/" not in url and "/gp/product/" not in url:
+            return None
+
+        if title is None:
+            title = self._find_first(card, ["img[alt]"])
+        name = " ".join(
+            ((title.get_attribute("title") if title else "")
+             or (title.get_attribute("alt") if title else "")
+             or (title.text if title else "")).split()
+        )
+        if not name:
+            return None
+
+        price = self._find_first(card, config.PRICE_SELECTORS)
+        price_text = ""
+        if price:
+            price_text = (
+                price.get_attribute("textContent")
+                or price.get_attribute("innerText")
+                or price.text
+                or ""
+            ).strip()
+        if not price_text:
+            for selector in (".a-price", ".p13n-sc-price", "[class*='price']"):
+                try:
+                    fallback_el = card.find_element(By.CSS_SELECTOR, selector)
+                    price_text = (
+                        fallback_el.get_attribute("textContent")
+                        or fallback_el.get_attribute("innerText")
+                        or fallback_el.text
+                        or ""
+                    ).strip()
+                    if price_text:
+                        break
+                except NoSuchElementException:
+                    continue
+
+        rating = self._find_first(card, config.RATING_SELECTORS)
+        rating_text = ""
+        if rating:
+            rating_text = (
+                rating.get_attribute("innerText")
+                or rating.get_attribute("class")
+                or rating.text
+            )
+        card_text = (card.text or "").lower()
+        unavailable = any(
+            marker in card_text
+            for marker in config.UNAVAILABLE_MARKERS
+        )
+        return Produit(
+            nom=name,
+            prix=self.parse_price(price_text),
+            note=self.parse_rating(rating_text),
+            disponibilite=not unavailable,
+            url=url,
+            image=self._get_image(card),
+            categorie=category.nom,
+        )
+
+    def _next_page_url(self) -> Optional[str]:
+        next_link = self._find_first(self.driver, self.NEXT_PAGE_SELECTORS)
+        if next_link is None:
+            return None
+        classes = next_link.get_attribute("class") or ""
+        if "a-disabled" in classes:
+            return None
+        href = next_link.get_attribute("href") or ""
+        return urljoin(self.driver.current_url, href) if href else None
+
+    def scrape_category(
+        self,
+        category: Categorie,
+        limit: int,
+        on_product: Optional[ProgressCallback] = None,
+    ) -> List[Produit]:
+        """Scrape jusqu'à `limit` produits, en parcourant plusieurs pages."""
+        if limit <= 0:
+            return []
+
+        if not self._open_category_from_home(category):
+            return []
+        products: List[Produit] = []
+        seen_urls = set()
+        visited_pages = set()
+        estimated_pages = (limit + config.ITEMS_PER_PAGE_ESTIMATE - 1) // config.ITEMS_PER_PAGE_ESTIMATE + config.PAGE_BUFFER
+        max_pages = max(1, min(config.MAX_PAGES_LIMIT, estimated_pages))
+
+        for _ in range(max_pages):
+            current_url = self.driver.current_url
+            if current_url in visited_pages:
+                break
+            visited_pages.add(current_url)
+            try:
+                self._wait_for_cards()
+            except TimeoutException:
+                break
+
+            self._scroll_until_stable()
+            cards = self._find_all_cards()
+            if not cards:
+                cards = [
+                    self._product_container_from_link(link)
+                    for link in self._find_product_links()
+                ]
+                cards = [card for card in cards if card is not None]
+            before_page = len(products)
+            for card in cards:
+                if len(products) >= limit:
+                    break
+                card_class = card.get_attribute("class") or ""
+                if any(ignored in card_class for ignored in config.IGNORED_CARD_CLASSES):
+                    continue
+                product = self._parse_card(card, category)
+                if product is None or product.url in seen_urls:
+                    continue
+                seen_urls.add(product.url)
+                products.append(product)
+                if on_product:
+                    on_product(product)
+
+            if len(products) >= limit:
+                break
+            next_url = self._next_page_url()
+            if not next_url or len(products) == before_page:
+                break
+            if not self._navigate(next_url):
+                break
+            self._dismiss_overlays()
+            time.sleep(config.PAGE_TRANSITION_DELAY_SECONDS)
+
+        return products[:limit]
+
+    def close(self) -> None:
+        if self.driver:
+            self.driver.quit()
+
+
+# Aliases pour rétrocompatibilité
+ScraperController = AmazonScraper
+Amazon_Scraper = AmazonScraper

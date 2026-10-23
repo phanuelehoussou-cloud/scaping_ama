@@ -16,8 +16,8 @@ from rich.progress import (
 from rich.prompt import IntPrompt
 
 import config
-from app.controllers.categories import CATEGORIES, Categorie
 from app.controllers.scraper_controller import ScraperController
+from app.models.categories import CATEGORIES, Categorie
 from app.models.repository import ProduitRepository
 
 
@@ -121,8 +121,7 @@ def run_scraping_session(web_process=None):
     categories = choose_categories()
     limit = ask_limit(categories)
     total = len(categories) * limit
-    repository = ProduitRepository(output_dir=config.OUTPUT_DIR)
-    controller = None
+    controller = ScraperController(headless=config.HEADLESS)
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -132,38 +131,39 @@ def run_scraping_session(web_process=None):
     )
 
     try:
-        controller = ScraperController(headless=config.HEADLESS)
         with progress:
             task = progress.add_task("Préparation...", total=total)
-            for category in categories:
-                progress.update(task, description=f"Scraping [cyan]{category.nom}[/cyan]")
 
-                def on_product(_product, task_id=task):
-                    progress.advance(task_id)
+            def on_start(cat: Categorie):
+                progress.update(task, description=f"Scraping [cyan]{cat.nom}[/cyan]")
 
-                try:
-                    products = controller.scrape_category(category, limit, on_product)
-                    repository.add_many(products)
-                except Exception as exc:
-                    products = []
-                    progress.console.print(
-                        f"[yellow]Catégorie {category.nom} ignorée : {exc}[/yellow]"
-                    )
-                progress.advance(task, max(0, limit - len(products)))
+            def on_product(_product):
+                progress.advance(task)
+
+            def on_error(cat: Categorie, exc: Exception):
+                progress.console.print(
+                    f"[yellow]Catégorie {cat.nom} ignorée : {exc}[/yellow]"
+                )
+
+            controller.scrape_categories(
+                categories=categories,
+                limit_per_category=limit,
+                on_product=on_product,
+                on_category_start=on_start,
+                on_category_error=on_error,
+            )
             progress.update(task, completed=total, description="Scraping terminé")
     except Exception as exc:
         console.print(f"[bold red]Impossible de démarrer le scraper : {exc}[/bold red]")
         return web_process
-    finally:
-        if controller:
-            controller.close()
 
-    console.print(f"\n[bold green]{repository.count()} produit(s) récupéré(s).[/bold green]")
-    if repository.count() == 0:
+    product_count = controller.repository.count()
+    console.print(f"\n[bold green]{product_count} produit(s) récupéré(s).[/bold green]")
+    if product_count == 0:
         console.print("[yellow]Aucun produit trouvé. Vérifie le réseau ou un éventuel CAPTCHA Amazon.[/yellow]")
         return web_process
 
-    json_available = save_results(repository)
+    json_available = save_results(controller.repository)
     return offer_web_viewer(web_process, json_available)
 
 
