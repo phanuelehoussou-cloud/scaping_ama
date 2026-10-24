@@ -89,22 +89,39 @@ DEFAULT_USER_AGENT: str = os.getenv("SCRAPER_USER_AGENT", USER_AGENT_CANDIDATES[
 NAVIGATE_ATTEMPTS: int = int(os.getenv("SCRAPER_NAVIGATE_ATTEMPTS", "3"))
 
 # Facteur multiplicateur pour le backoff exponentiel lors des réessais de navigation
+# (attente de plus en plus longue après chaque échec)
 NAVIGATE_BACKOFF_FACTOR: float = float(os.getenv("SCRAPER_BACKOFF_FACTOR", "1.5"))
 
-# Pause après changement de page pour laisser le DOM se stabiliser
-PAGE_TRANSITION_DELAY_SECONDS: float = float(os.getenv("SCRAPER_PAGE_DELAY", "1.2"))
+# ------------------------------------------------------------------------------
+# Pauses aléatoires (min, max) en secondes
+# Un rythme variable imite un humain, une pause fixe trahit un robot.
+# Si Amazon te bloque : augmente les fourchettes. Si tout passe : tu peux les baisser.
+# ------------------------------------------------------------------------------
 
-# Pause après avoir fermé les popups de consentement/cookies
-CONSENT_DISMISS_PAUSE_SECONDS: float = 0.5
+# Pause après un changement de page, pour laisser le DOM se stabiliser
+PAGE_TRANSITION_DELAY_RANGE: Tuple[float, float] = (3.0, 6.0)
 
-# Pause après avoir scrollé un produit dans la vue pour déclencher le lazy-loading de l'image
-IMAGE_SCROLL_PAUSE_SECONDS: float = 0.1
+# Pause juste après le chargement d'une URL (driver.get), avant de lire la page
+NAVIGATE_INITIAL_DELAY_RANGE: Tuple[float, float] = (1.0, 2.5)
 
+# Pause après avoir fermé un popup de consentement / cookies
+CONSENT_DISMISS_PAUSE_RANGE: Tuple[float, float] = (1.0, 2.0)
+
+# Pause après avoir fait défiler une carte produit dans la vue
+# (déclenche le lazy-loading de l'image). Exécutée pour CHAQUE carte.
+IMAGE_SCROLL_PAUSE_RANGE: Tuple[float, float] = (0.6, 1.4)
+
+# Pause entre deux défilements de page (chargement des cartes lazy-loaded)
+SCROLL_PAUSE_RANGE: Tuple[float, float] = (1.5, 3.0)
+
+# ------------------------------------------------------------------------------
 # Paramètres de défilement (lazy loading infini / dynamique)
-SCROLL_MAX_ROUNDS: int = int(os.getenv("SCRAPER_SCROLL_MAX_ROUNDS", "8"))
-SCROLL_STABLE_THRESHOLD: int = int(os.getenv("SCRAPER_SCROLL_STABLE_THRESHOLD", "2"))
-SCROLL_PAUSE_SECONDS: float = float(os.getenv("SCRAPER_SCROLL_PAUSE", "0.7"))
+# ------------------------------------------------------------------------------
+# Nombre maximal de défilements avant d'arrêter
+SCROLL_MAX_ROUNDS: int = int(os.getenv("SCRAPER_SCROLL_MAX_ROUNDS", "6"))
 
+# Nombre de défilements consécutifs sans nouvelle carte avant de considérer la page stable
+SCROLL_STABLE_THRESHOLD: int = int(os.getenv("SCRAPER_SCROLL_STABLE_THRESHOLD", "2"))
 
 # ==============================================================================
 # 6. ESTIMATION ET LIMITES DE PAGINATION
@@ -115,7 +132,7 @@ DEFAULT_PRODUCTS_PER_CATEGORY: int = 10
 # Estimation du nombre de produits par page Amazon pour calculer max_pages
 ITEMS_PER_PAGE_ESTIMATE: int = 20
 PAGE_BUFFER: int = 5
-MAX_PAGES_LIMIT: int = 50
+MAX_PAGES_LIMIT: int = 10
 
 
 # ==============================================================================
@@ -174,7 +191,7 @@ LINK_SELECTORS: Tuple[str, ...] = (
 
 # Sélecteurs du prix
 PRICE_SELECTORS: Tuple[str, ...] = (
-    ".a-price .a-offscreen",
+    ".a-price-whole .a-price-fraction",
     ".p13n-sc-price",
     ".a-price",
     ".a-price-whole",

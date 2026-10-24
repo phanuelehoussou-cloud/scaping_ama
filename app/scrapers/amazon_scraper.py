@@ -50,11 +50,46 @@ class AmazonScraper:
             options=options,
         )
 
+    def _is_blocked(self) -> bool:
+        """Détecte si Amazon affiche une page de blocage / CAPTCHA."""
+        src = self.driver.page_source.lower()
+        return (
+            "validatecaptcha" in src
+            or "continuer les achats" in src
+            or "robot" in self.driver.title.lower()
+            or len(self.driver.page_source) < 10_000
+        )
+
+    def _bypass_soft_block(self) -> bool:
+        """Tente de passer la page de validation douce d'Amazon (bouton 'Continuer').
+        Retourne True si le blocage est levé, False si un CAPTCHA image reste affiché.
+        """
+        try:
+            buttons = self.driver.find_elements(By.CSS_SELECTOR, ".a-button-text, button[type='submit']")
+            for btn in buttons:
+                text = (btn.text or "").lower()
+                if "continuer" in text or "achats" in text or "continue" in text:
+                    self.driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(config.PAGE_TRANSITION_DELAY_SECONDS + 2)
+                    return not self._is_blocked()
+        except Exception:
+            pass
+        return False
+
     def _navigate(self, url: str, attempts: int = config.NAVIGATE_ATTEMPTS) -> bool:
-        """Navigue avec quelques tentatives pour absorber les erreurs réseau temporaires."""
+        """Navigue avec quelques tentatives et gestion du blocage Amazon."""
         for attempt in range(attempts):
             try:
                 self.driver.get(url)
+                time.sleep(0.5)
+                if self._is_blocked():
+                    if not self._bypass_soft_block():
+                        # Blocage dur (CAPTCHA image) : on attend avant de réessayer
+                        time.sleep(config.NAVIGATE_BACKOFF_FACTOR * (attempt + 2) * 3)
+                        self.driver.get(url)
+                        time.sleep(1)
+                        if self._is_blocked():
+                            return False
                 return True
             except WebDriverException:
                 if attempt == attempts - 1:
@@ -118,40 +153,13 @@ class AmazonScraper:
             return False
 
     @staticmethod
+    
     def parse_price(text: str) -> float:
-        if not text:
+        match = re.search(r"\d[\d\s\u00a0]*(?:[.,]\d{1,2}(?!\d))?", text)
+        if not match:
             return 0.0
-        # 1. Motif standard de prix avec décimales (ex: 24,99 € ou 1 299,00 € ou 14.99)
-        match = re.search(r"(\d+(?:[\s\u00a0]\d+)*)[.,](\d{2})", text)
-        if match:
-            whole = re.sub(r"\D", "", match.group(1))
-            dec = match.group(2)
-            try:
-                return float(f"{whole}.{dec}")
-            except ValueError:
-                pass
-
-        # 2. Motif entier avec symbole monétaire (ex: 25 €)
-        match_int = re.search(r"(\d+(?:[\s\u00a0]\d+)*)\s*€", text)
-        if match_int:
-            try:
-                return float(re.sub(r"\D", "", match_int.group(1)))
-            except ValueError:
-                pass
-
-        # 3. Nettoyage générique en fallback
-        cleaned = re.sub(r"[^\d,.]", "", text)
-        if not cleaned:
-            return 0.0
-        comma = cleaned.rfind(",")
-        dot = cleaned.rfind(".")
-        decimal = "," if comma > dot else "."
-        if comma >= 0 and dot >= 0:
-            cleaned = cleaned.replace("." if decimal == "," else ",", "")
-        try:
-            return float(cleaned.replace(decimal, "."))
-        except ValueError:
-            return 0.0
+        number = re.sub(r"[\s\u00a0]", "", match.group()).replace(",", ".")
+        return float(number)
 
     @staticmethod
     def parse_rating(text: str) -> float:
@@ -256,8 +264,8 @@ class AmazonScraper:
             title = self._find_first(card, ["img[alt]"])
         name = " ".join(
             ((title.get_attribute("title") if title else "")
-             or (title.get_attribute("alt") if title else "")
-             or (title.text if title else "")).split()
+            or (title.get_attribute("alt") if title else "")
+            or (title.text if title else "")).split()
         )
         if not name:
             return None
