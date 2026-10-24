@@ -26,9 +26,17 @@ python -m pip install -r requirements.txt
 ```
 
 4. Lancer le scraping :
+soit du terminal avec 
 
 ```powershell
 python main.py
+```
+
+ou directement sur le site web avec:
+
+
+```powershell
+python web.py
 ```
 
 5. Répondre aux questions du programme :
