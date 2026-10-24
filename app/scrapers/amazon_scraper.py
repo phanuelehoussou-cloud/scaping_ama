@@ -2,7 +2,7 @@ import random
 import re
 import time
 from typing import Callable, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 from selenium import webdriver
 from selenium.common.exceptions import (
@@ -125,7 +125,14 @@ class AmazonScraper:
         ).casefold()
 
     def _open_category_from_home(self, category: Categorie) -> bool:
-        """Ouvre une catégorie via les liens de l'accueil, sinon via la recherche."""
+        """Ouvre une catégorie : recherche directe sur Amazon, sinon liens de l'accueil."""
+        # Chemin fiable : page de résultats de recherche (grille de produits connue)
+        search_url = urljoin(self.base_url, f"s?k={quote_plus(category.nom)}")
+        if self._navigate(search_url):
+            self._dismiss_overlays()
+            return True
+
+        # Secours : ancien parcours via les liens de l'accueil
         if not self._navigate(self.base_url):
             return False
         self._dismiss_overlays()
@@ -138,6 +145,8 @@ class AmazonScraper:
         for link in links:
             text = self._link_text(link)
             href = (link.get_attribute("href") or "").casefold()
+            if "amazon." not in href:  # ignore les liens vers d'autres sites (ex: abebooks.fr)
+                continue
             if any(label in text for label in labels):
                 category_link = link
                 break
