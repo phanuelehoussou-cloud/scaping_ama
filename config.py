@@ -118,7 +118,7 @@ SCROLL_PAUSE_RANGE: Tuple[float, float] = (1.5, 3.0)
 # Paramètres de défilement (lazy loading infini / dynamique)
 # ------------------------------------------------------------------------------
 # Nombre maximal de défilements avant d'arrêter
-SCROLL_MAX_ROUNDS: int = int(os.getenv("SCRAPER_SCROLL_MAX_ROUNDS", "6"))
+SCROLL_MAX_ROUNDS: int = int(os.getenv("SCRAPER_SCROLL_MAX_ROUNDS", "12"))  
 
 # Nombre de défilements consécutifs sans nouvelle carte avant de considérer la page stable
 SCROLL_STABLE_THRESHOLD: int = int(os.getenv("SCRAPER_SCROLL_STABLE_THRESHOLD", "2"))

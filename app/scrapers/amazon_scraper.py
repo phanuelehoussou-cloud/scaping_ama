@@ -1,10 +1,16 @@
+import random
 import re
 import time
 from typing import Callable, List, Optional
 from urllib.parse import urljoin
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -13,11 +19,17 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 import config
-from app.models.categories import AMAZON_BASE_URL, Categorie
+from app.models.categories import Categorie
 from app.models.item import Produit
 
 
 ProgressCallback = Callable[[Produit], None]
+
+# Sélecteurs de SECOURS, essayés APRÈS ceux de config.py (qui gardent la priorité).
+# Utiles sur les pages de résultats de recherche (/s?k=...), où le titre est dans <h2>.
+_EXTRA_TITLE_SELECTORS = ("h2 span", "h2", "img[alt]")
+_EXTRA_LINK_SELECTORS = ("h2 a", "a[href*='/dp/']", "a[href*='/gp/product/']")
+_EXTRA_PRICE_SELECTORS = (".a-price .a-offscreen", "[class*='price']")
 
 
 class AmazonScraper:
@@ -34,8 +46,13 @@ class AmazonScraper:
     ):
         self.headless = config.HEADLESS if headless is None else headless
         self.wait_seconds = config.WAIT_SECONDS if wait_seconds is None else wait_seconds
-        self.base_url = base_url or AMAZON_BASE_URL
+        self.base_url = base_url or config.AMAZON_BASE_URL
         self.driver = self._init_driver(self.headless)
+
+    @staticmethod
+    def _pause(delay_range) -> None:
+        """Attend une durée aléatoire dans la fourchette (min, max), en secondes."""
+        time.sleep(random.uniform(*delay_range))
 
     def _init_driver(self, headless: bool):
         options = Options()
@@ -45,6 +62,10 @@ class AmazonScraper:
             options.add_argument(arg)
         options.add_argument(f"user-agent={config.DEFAULT_USER_AGENT}")
 
+        # Réduit les traces visibles de Selenium
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+
         return webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=options,
@@ -52,25 +73,24 @@ class AmazonScraper:
 
     def _is_blocked(self) -> bool:
         """Détecte si Amazon affiche une page de blocage / CAPTCHA."""
-        src = self.driver.page_source.lower()
+        page = self.driver.page_source
+        src = page.lower()
         return (
             "validatecaptcha" in src
             or "continuer les achats" in src
             or "robot" in self.driver.title.lower()
-            or len(self.driver.page_source) < 10_000
+            or len(page) < 5_000
         )
 
     def _bypass_soft_block(self) -> bool:
-        """Tente de passer la page de validation douce d'Amazon (bouton 'Continuer').
-        Retourne True si le blocage est levé, False si un CAPTCHA image reste affiché.
-        """
+        """Tente de passer la page de validation douce (bouton 'Continuer')."""
         try:
             buttons = self.driver.find_elements(By.CSS_SELECTOR, ".a-button-text, button[type='submit']")
             for btn in buttons:
                 text = (btn.text or "").lower()
                 if "continuer" in text or "achats" in text or "continue" in text:
                     self.driver.execute_script("arguments[0].click();", btn)
-                    time.sleep(config.PAGE_TRANSITION_DELAY_SECONDS + 2)
+                    self._pause(config.PAGE_TRANSITION_DELAY_RANGE)
                     return not self._is_blocked()
         except Exception:
             pass
@@ -81,14 +101,14 @@ class AmazonScraper:
         for attempt in range(attempts):
             try:
                 self.driver.get(url)
-                time.sleep(0.5)
+                self._pause(config.NAVIGATE_INITIAL_DELAY_RANGE)
                 if self._is_blocked():
                     if not self._bypass_soft_block():
-                        # Blocage dur (CAPTCHA image) : on attend avant de réessayer
                         time.sleep(config.NAVIGATE_BACKOFF_FACTOR * (attempt + 2) * 3)
                         self.driver.get(url)
-                        time.sleep(1)
+                        self._pause(config.NAVIGATE_INITIAL_DELAY_RANGE)
                         if self._is_blocked():
+                            print("[INFO] Page bloquée par Amazon (CAPTCHA).")
                             return False
                 return True
             except WebDriverException:
@@ -97,8 +117,15 @@ class AmazonScraper:
                 time.sleep(config.NAVIGATE_BACKOFF_FACTOR * (attempt + 1))
         return False
 
+    @staticmethod
+    def _link_text(link) -> str:
+        """Texte + aria-label d'un lien, normalisé pour la comparaison."""
+        return " ".join(
+            ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
+        ).casefold()
+
     def _open_category_from_home(self, category: Categorie) -> bool:
-        """Ouvre une catégorie en utilisant les liens présents dans le DOM Amazon."""
+        """Ouvre une catégorie via les liens de l'accueil, sinon via la recherche."""
         if not self._navigate(self.base_url):
             return False
         self._dismiss_overlays()
@@ -109,9 +136,7 @@ class AmazonScraper:
         labels = tuple(label.casefold() for label in category.labels)
 
         for link in links:
-            text = " ".join(
-                ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
-            ).casefold()
+            text = self._link_text(link)
             href = (link.get_attribute("href") or "").casefold()
             if any(label in text for label in labels):
                 category_link = link
@@ -126,21 +151,16 @@ class AmazonScraper:
                 self.driver.execute_script("arguments[0].click();", best_sellers_link)
                 WebDriverWait(self.driver, self.wait_seconds).until(
                     lambda driver: any(
-                        any(label in " ".join(
-                            ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
-                        ).casefold() for label in labels)
+                        any(label in self._link_text(link) for label in labels)
                         for link in driver.find_elements(By.CSS_SELECTOR, "a[href]")
                     )
                 )
                 for link in self.driver.find_elements(By.CSS_SELECTOR, "a[href]"):
-                    text = " ".join(
-                        ((link.text or "") + " " + (link.get_attribute("aria-label") or "")).split()
-                    ).casefold()
-                    if any(label in text for label in labels):
+                    if any(label in self._link_text(link) for label in labels):
                         self.driver.execute_script("arguments[0].click();", link)
                         break
             else:
-                # Dernier parcours UI : recherche de la catégorie depuis l'accueil.
+                # Dernier recours : recherche de la catégorie dans la barre de recherche
                 search_box = WebDriverWait(self.driver, self.wait_seconds).until(
                     lambda driver: driver.find_element(By.ID, config.SEARCH_INPUT_ID)
                 )
@@ -153,13 +173,16 @@ class AmazonScraper:
             return False
 
     @staticmethod
-    
     def parse_price(text: str) -> float:
+        """Extrait le premier nombre du texte (gère espaces de milliers et virgule)."""
         match = re.search(r"\d[\d\s\u00a0]*(?:[.,]\d{1,2}(?!\d))?", text)
         if not match:
             return 0.0
         number = re.sub(r"[\s\u00a0]", "", match.group()).replace(",", ".")
-        return float(number)
+        try:
+            return float(number)
+        except ValueError:
+            return 0.0
 
     @staticmethod
     def parse_rating(text: str) -> float:
@@ -178,6 +201,25 @@ class AmazonScraper:
                 continue
         return None
 
+    @staticmethod
+    def _read_text(element) -> str:
+        """Lit le texte, même caché (textContent), avec repli sur innerText puis .text."""
+        return (
+            element.get_attribute("textContent")
+            or element.get_attribute("innerText")
+            or element.text
+            or ""
+        ).strip()
+
+    def _find_product_link(self, card):
+        """Premier lien de la carte dont l'URL pointe vraiment vers un produit (/dp/ ou /gp/product/)."""
+        for selector in tuple(config.LINK_SELECTORS) + _EXTRA_LINK_SELECTORS:
+            for element in card.find_elements(By.CSS_SELECTOR, selector):
+                href = element.get_attribute("href") or ""
+                if "/dp/" in href or "/gp/product/" in href:
+                    return element
+        return None
+
     def _find_all_cards(self):
         return self.driver.find_elements(By.CSS_SELECTOR, self.CARD_SELECTOR)
 
@@ -188,7 +230,7 @@ class AmazonScraper:
                 buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 if buttons and buttons[0].is_displayed():
                     self.driver.execute_script("arguments[0].click();", buttons[0])
-                    time.sleep(config.CONSENT_DISMISS_PAUSE_SECONDS)
+                    self._pause(config.CONSENT_DISMISS_PAUSE_RANGE)
                     return
             except Exception:
                 continue
@@ -197,7 +239,7 @@ class AmazonScraper:
         self.driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", card
         )
-        time.sleep(config.IMAGE_SCROLL_PAUSE_SECONDS)
+        self._pause(config.IMAGE_SCROLL_PAUSE_RANGE)
         image = self._find_first(card, config.IMAGE_SELECTORS)
         if image is None:
             return ""
@@ -235,7 +277,7 @@ class AmazonScraper:
         )
 
     def _scroll_until_stable(self) -> None:
-        """Force le chargement des cartes lazy-loaded avant l'extraction."""
+        """Force le chargement des cartes lazy-loaded (défilement progressif)."""
         previous_count = 0
         stable_rounds = 0
         for _ in range(config.SCROLL_MAX_ROUNDS):
@@ -247,52 +289,36 @@ class AmazonScraper:
             if stable_rounds >= config.SCROLL_STABLE_THRESHOLD:
                 break
             previous_count = current_count
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(config.SCROLL_PAUSE_SECONDS)
+            self.driver.execute_script(
+                "window.scrollBy(0, arguments[0]);", random.randint(600, 1200)
+            )
+            self._pause(config.SCROLL_PAUSE_RANGE)
 
     def _parse_card(self, card, category: Categorie) -> Optional[Produit]:
-        title = self._find_first(card, config.TITLE_SELECTORS)
-        link = self._find_first(card, config.LINK_SELECTORS)
+        link = self._find_product_link(card)
         if link is None:
             return None
-
         url = urljoin(self.driver.current_url, link.get_attribute("href") or "")
-        if not url or "/dp/" not in url and "/gp/product/" not in url:
-            return None
 
-        if title is None:
-            title = self._find_first(card, ["img[alt]"])
-        name = " ".join(
-            ((title.get_attribute("title") if title else "")
-            or (title.get_attribute("alt") if title else "")
-            or (title.text if title else "")).split()
-        )
+        # Titre : sélecteurs de config.py d'abord, puis secours
+        title = self._find_first(card, tuple(config.TITLE_SELECTORS) + _EXTRA_TITLE_SELECTORS)
+        name = ""
+        if title is not None:
+            name = " ".join(
+                (
+                    title.get_attribute("title")
+                    or title.get_attribute("alt")
+                    or title.text
+                    or title.get_attribute("textContent")
+                    or ""
+                ).split()
+            )
         if not name:
             return None
 
-        price = self._find_first(card, config.PRICE_SELECTORS)
-        price_text = ""
-        if price:
-            price_text = (
-                price.get_attribute("textContent")
-                or price.get_attribute("innerText")
-                or price.text
-                or ""
-            ).strip()
-        if not price_text:
-            for selector in (".a-price", ".p13n-sc-price", "[class*='price']"):
-                try:
-                    fallback_el = card.find_element(By.CSS_SELECTOR, selector)
-                    price_text = (
-                        fallback_el.get_attribute("textContent")
-                        or fallback_el.get_attribute("innerText")
-                        or fallback_el.text
-                        or ""
-                    ).strip()
-                    if price_text:
-                        break
-                except NoSuchElementException:
-                    continue
+        # Prix : sélecteurs de config.py d'abord, puis secours
+        price = self._find_first(card, tuple(config.PRICE_SELECTORS) + _EXTRA_PRICE_SELECTORS)
+        price_text = self._read_text(price) if price else ""
 
         rating = self._find_first(card, config.RATING_SELECTORS)
         rating_text = ""
@@ -301,12 +327,10 @@ class AmazonScraper:
                 rating.get_attribute("innerText")
                 or rating.get_attribute("class")
                 or rating.text
+                or ""
             )
         card_text = (card.text or "").lower()
-        unavailable = any(
-            marker in card_text
-            for marker in config.UNAVAILABLE_MARKERS
-        )
+        unavailable = any(marker in card_text for marker in config.UNAVAILABLE_MARKERS)
         return Produit(
             nom=name,
             prix=self.parse_price(price_text),
@@ -338,11 +362,16 @@ class AmazonScraper:
             return []
 
         if not self._open_category_from_home(category):
+            print(f"[INFO] {category.nom} : impossible d'ouvrir la catégorie (blocage ou réseau).")
             return []
+
         products: List[Produit] = []
         seen_urls = set()
         visited_pages = set()
-        estimated_pages = (limit + config.ITEMS_PER_PAGE_ESTIMATE - 1) // config.ITEMS_PER_PAGE_ESTIMATE + config.PAGE_BUFFER
+        estimated_pages = (
+            (limit + config.ITEMS_PER_PAGE_ESTIMATE - 1) // config.ITEMS_PER_PAGE_ESTIMATE
+            + config.PAGE_BUFFER
+        )
         max_pages = max(1, min(config.MAX_PAGES_LIMIT, estimated_pages))
 
         for _ in range(max_pages):
@@ -353,6 +382,7 @@ class AmazonScraper:
             try:
                 self._wait_for_cards()
             except TimeoutException:
+                print(f"[INFO] {category.nom} : aucune carte trouvée sur {current_url}")
                 break
 
             self._scroll_until_stable()
@@ -363,20 +393,33 @@ class AmazonScraper:
                     for link in self._find_product_links()
                 ]
                 cards = [card for card in cards if card is not None]
+
             before_page = len(products)
+            rejected = 0
             for card in cards:
                 if len(products) >= limit:
                     break
-                card_class = card.get_attribute("class") or ""
-                if any(ignored in card_class for ignored in config.IGNORED_CARD_CLASSES):
+                try:
+                    card_class = card.get_attribute("class") or ""
+                    if any(ignored in card_class for ignored in config.IGNORED_CARD_CLASSES):
+                        continue
+                    product = self._parse_card(card, category)
+                except StaleElementReferenceException:
                     continue
-                product = self._parse_card(card, category)
-                if product is None or product.url in seen_urls:
+                if product is None:
+                    rejected += 1
+                    continue
+                if product.url in seen_urls:
                     continue
                 seen_urls.add(product.url)
                 products.append(product)
                 if on_product:
                     on_product(product)
+
+            print(
+                f"[INFO] {category.nom} : {len(cards)} cartes, "
+                f"{len(products) - before_page} retenues, {rejected} rejetées"
+            )
 
             if len(products) >= limit:
                 break
@@ -386,7 +429,7 @@ class AmazonScraper:
             if not self._navigate(next_url):
                 break
             self._dismiss_overlays()
-            time.sleep(config.PAGE_TRANSITION_DELAY_SECONDS)
+            self._pause(config.PAGE_TRANSITION_DELAY_RANGE)
 
         return products[:limit]
 
