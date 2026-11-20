@@ -1,7 +1,6 @@
 # Amazon Scraper Pro
 
 ## Prérequis
-
 - Python installé
 - Google Chrome installé (le pilote est téléchargé automatiquement au premier lancement)
 

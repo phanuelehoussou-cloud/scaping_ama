@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Union
-
 import config
 from app.models.categories import CATEGORIES, Categorie
 from app.models.item import Produit
